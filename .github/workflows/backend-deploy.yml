@@ -43,6 +43,7 @@ jobs:
       - name: Install, typecheck, test, build
         env:
           DATABASE_URL: postgres://interviewveil:test@localhost:5432/interviewveil_test
+          STT_API_KEY: test-stt-key
         run: |
           npm ci
           npm run typecheck
