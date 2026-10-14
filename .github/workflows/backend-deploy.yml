@@ -73,10 +73,15 @@ jobs:
           script: |
             set -euo pipefail
             APP="/var/www/interviewveil"
-            # Repo is often owned by deploy; SSH may run as ubuntu — avoid "dubious ownership"
-            git config --global --add safe.directory "$APP"
-            cd "$APP"
-            git fetch origin
-            git checkout main
-            git pull --ff-only origin main
-            bash deploy/native/release-deploy.sh
+            DEPLOY_USER="deploy"
+            export DEPLOY_PATH="$APP"
+            if [ "$(whoami)" = "$DEPLOY_USER" ]; then
+              bash "$APP/deploy/native/pull-and-deploy.sh"
+            elif sudo -n -u "$DEPLOY_USER" -H bash "$APP/deploy/native/pull-and-deploy.sh"; then
+              true
+            else
+              echo "Git/npm/pm2 must run as ${DEPLOY_USER} (repo owner). Either:"
+              echo "  1) Set GitHub secret SSH_USER=${DEPLOY_USER} and SSH with deploy's key, or"
+              echo "  2) On EC2: echo 'ubuntu ALL=(${DEPLOY_USER}) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/github-deploy && sudo chmod 440 /etc/sudoers.d/github-deploy"
+              exit 1
+            fi

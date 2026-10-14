@@ -148,7 +148,17 @@ In **GitHub → interviewVeil-backend → Settings → Secrets and variables →
 | `SSH_HOST` | EC2 public IP or `api.example.com` | Yes, for deploy job to run |
 | `SSH_USER` | **`deploy`** if the repo was cloned with `sudo -u deploy` (recommended) | Yes |
 
-If `SSH_USER` is `ubuntu` but `/var/www/interviewveil` is owned by `deploy`, either set **`SSH_USER=deploy`** or run once on the server: `git config --global --add safe.directory /var/www/interviewveil` (the deploy workflow does this automatically).
+The clone under `/var/www/interviewveil` must be owned by **`deploy`**. GitHub SSH must run deploy steps as that user:
+
+- **Recommended:** `SSH_USER` = **`deploy`** (private key in `deploy`’s `~/.ssh/authorized_keys`).
+- **If `SSH_USER` is `ubuntu`:** allow passwordless sudo to deploy (one-time on EC2):
+
+  ```bash
+  echo 'ubuntu ALL=(deploy) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/github-deploy
+  sudo chmod 440 /etc/sudoers.d/github-deploy
+  ```
+
+  The workflow runs `sudo -u deploy …/pull-and-deploy.sh` so `git pull` and `pm2` use the correct user.
 | `SSH_PRIVATE_KEY` | Full contents of `interviewveil-deploy` (private key) | Yes |
 | `SSH_PORT` | `22` | No |
 | `DEPLOY_PATH` | `/var/www/interviewveil` | No (default shown) |
