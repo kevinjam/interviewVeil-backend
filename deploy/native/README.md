@@ -73,6 +73,7 @@ GitHub Actions runs `git pull` on the server during deploy; this deploy key is w
 
    ```bash
    cp .env.example .env
+   # Or copy your local production file (gitignored): scp .env.prod → server .env
    chmod 600 .env
    # NODE_ENV=production, PUBLIC_URL, DATABASE_URL, keys, …
    ```
@@ -145,7 +146,9 @@ In **GitHub → interviewVeil-backend → Settings → Secrets and variables →
 | Secret | Example | Required |
 | --- | --- | --- |
 | `SSH_HOST` | EC2 public IP or `api.example.com` | Yes, for deploy job to run |
-| `SSH_USER` | `deploy` or `ubuntu` | Yes |
+| `SSH_USER` | **`deploy`** if the repo was cloned with `sudo -u deploy` (recommended) | Yes |
+
+If `SSH_USER` is `ubuntu` but `/var/www/interviewveil` is owned by `deploy`, either set **`SSH_USER=deploy`** or run once on the server: `git config --global --add safe.directory /var/www/interviewveil` (the deploy workflow does this automatically).
 | `SSH_PRIVATE_KEY` | Full contents of `interviewveil-deploy` (private key) | Yes |
 | `SSH_PORT` | `22` | No |
 | `DEPLOY_PATH` | `/var/www/interviewveil` | No (default shown) |

@@ -73,6 +73,8 @@ jobs:
           script: |
             set -euo pipefail
             APP="/var/www/interviewveil"
+            # Repo is often owned by deploy; SSH may run as ubuntu — avoid "dubious ownership"
+            git config --global --add safe.directory "$APP"
             cd "$APP"
             git fetch origin
             git checkout main
