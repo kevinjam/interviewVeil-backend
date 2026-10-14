@@ -1,0 +1,8 @@
+# HTTPS certificates are issued and renewed automatically for {$API_DOMAIN}.
+{$API_DOMAIN} {
+	encode gzip
+	# Streams AI answers as they're generated (no response buffering).
+	reverse_proxy api:8787 {
+		flush_interval -1
+	}
+}

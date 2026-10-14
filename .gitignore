@@ -1,0 +1,14 @@
+node_modules
+dist
+.DS_Store
+
+# Secrets and local env (keep examples tracked)
+.env
+.env.*
+!.env.example
+!.env.test.example
+
+# PM2 / runtime logs on the server (if copied locally)
+logs
+*.log
+pm2-*.log

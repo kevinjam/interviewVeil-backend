@@ -1,0 +1,35 @@
+{
+  "name": "interviewveil-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "start": "node --env-file-if-exists=.env dist/server.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx --env-file-if-exists=.env src/db/migrate.ts",
+    "stripe:setup": "tsx --env-file-if-exists=.env src/billing/setup.ts",
+    "test": "tsx --env-file-if-exists=.env.test --test --test-concurrency=1 test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.8",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.7.2",
+    "pg": "^8.23.1",
+    "stripe": "^17.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "~4.20.6",
+    "typescript": "~5.7.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "overrides": {
+    "esbuild": "^0.25.4"
+  }
+}

@@ -1,0 +1,70 @@
+name: Deploy backend
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "backend/.github/workflows/backend-deploy.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: interviewveil
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: interviewveil_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U interviewveil -d interviewveil_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install, typecheck, test, build
+        env:
+          DATABASE_URL: postgres://interviewveil:test@localhost:5432/interviewveil_test
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+  deploy:
+    needs: test
+    # Skipped until SSH_* secrets are configured in the repo.
+    if: secrets.SSH_HOST != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            APP="${DEPLOY_PATH:-/var/www/interviewveil}"
+            cd "$APP"
+            git fetch origin
+            git checkout main
+            git pull --ff-only origin main
+            bash backend/deploy/native/release-deploy.sh

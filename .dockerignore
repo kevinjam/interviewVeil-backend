@@ -1,0 +1,9 @@
+node_modules
+dist
+test
+.env
+.env.*
+!.env.example
+Dockerfile
+deploy
+*.md
