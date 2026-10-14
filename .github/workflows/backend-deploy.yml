@@ -72,16 +72,21 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
-            APP="/var/www/interviewveil"
             DEPLOY_USER="deploy"
-            export DEPLOY_PATH="$APP"
+            DEPLOY_CMD='set -euo pipefail
+            git config --global --add safe.directory /var/www/interviewveil
+            cd /var/www/interviewveil
+            git fetch origin
+            git checkout main
+            git pull --ff-only origin main
+            bash deploy/native/release-deploy.sh'
             if [ "$(whoami)" = "$DEPLOY_USER" ]; then
-              bash "$APP/deploy/native/pull-and-deploy.sh"
-            elif sudo -n -u "$DEPLOY_USER" -H bash "$APP/deploy/native/pull-and-deploy.sh"; then
+              bash -c "$DEPLOY_CMD"
+            elif sudo -n -u "$DEPLOY_USER" -H bash -c "$DEPLOY_CMD"; then
               true
             else
-              echo "Git/npm/pm2 must run as ${DEPLOY_USER} (repo owner). Either:"
-              echo "  1) Set GitHub secret SSH_USER=${DEPLOY_USER} and SSH with deploy's key, or"
-              echo "  2) On EC2: echo 'ubuntu ALL=(${DEPLOY_USER}) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/github-deploy && sudo chmod 440 /etc/sudoers.d/github-deploy"
+              echo "Git/npm/pm2 must run as ${DEPLOY_USER} (owner of /var/www/interviewveil). Either:"
+              echo "  1) GitHub secret SSH_USER=${DEPLOY_USER} + deploy SSH key, or"
+              echo "  2) echo 'ubuntu ALL=(${DEPLOY_USER}) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/github-deploy && sudo chmod 440 /etc/sudoers.d/github-deploy"
               exit 1
             fi
