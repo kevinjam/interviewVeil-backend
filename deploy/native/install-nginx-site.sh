@@ -13,5 +13,6 @@ sudo ln -sf "$TARGET" /etc/nginx/sites-enabled/interviewveil-api
 sudo nginx -t
 sudo systemctl reload nginx
 
-echo "Nginx site enabled for ${API_DOMAIN}. Run certbot when DNS points here:"
+echo "Nginx site enabled for ${API_DOMAIN} (HTTP :80 only until Certbot adds TLS)."
+echo "  sudo nginx -t && sudo systemctl reload nginx"
 echo "  sudo certbot --nginx -d ${API_DOMAIN}"

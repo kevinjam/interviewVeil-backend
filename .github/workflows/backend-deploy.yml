@@ -4,16 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - "backend/**"
-      - "backend/.github/workflows/backend-deploy.yml"
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: backend
     services:
       postgres:
         image: postgres:16-alpine
@@ -35,7 +29,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: backend/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install, typecheck, test, build
         env:
@@ -48,7 +42,7 @@ jobs:
 
   deploy:
     needs: test
-    # Skipped until SSH_* secrets are configured in the repo.
+    # Skipped until SSH_* repository secrets are set (see deploy/native/README.md).
     if: secrets.SSH_HOST != ''
     runs-on: ubuntu-latest
     steps:
@@ -62,9 +56,9 @@ jobs:
           script_stop: true
           script: |
             set -euo pipefail
-            APP="${DEPLOY_PATH:-/var/www/interviewveil}"
+            APP="${{ secrets.DEPLOY_PATH || '/var/www/interviewveil' }}"
             cd "$APP"
             git fetch origin
             git checkout main
             git pull --ff-only origin main
-            bash backend/deploy/native/release-deploy.sh
+            bash deploy/native/release-deploy.sh

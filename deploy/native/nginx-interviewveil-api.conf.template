@@ -1,21 +1,12 @@
-# Copy to /etc/nginx/sites-available/interviewveil-api and replace API_DOMAIN.
-# Or run: API_DOMAIN=api.example.com bash deploy/native/install-nginx-site.sh
+# HTTP-only bootstrap for Certbot. Do not add listen 443 ssl until certificates exist.
+# Or run: API_DOMAIN=api.interviewveil.com bash deploy/native/install-nginx-site.sh
+# Then: sudo certbot --nginx -d api.interviewveil.com
+# Certbot will add HTTPS and the port-80 redirect; re-apply streaming proxy_* settings on the :443 block if needed.
 
 server {
     listen 80;
     listen [::]:80;
     server_name API_DOMAIN;
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name API_DOMAIN;
-
-    # Certbot adds ssl_certificate directives here.
 
     client_max_body_size 25m;
 
