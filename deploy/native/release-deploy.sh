@@ -19,14 +19,17 @@ if [[ ! -f .env ]]; then
   exit 1
 fi
 
-echo "==> npm ci (production)"
-npm ci --omit=dev
+echo "==> npm ci"
+npm ci
 
 echo "==> build"
 npm run build
 
 echo "==> migrations"
-npm run db:migrate
+node --env-file-if-exists=.env dist/db/migrate.js
+
+echo "==> npm prune (drop devDependencies on server)"
+npm prune --omit=dev
 
 echo "==> PM2"
 if pm2 describe interviewveil-api >/dev/null 2>&1; then
