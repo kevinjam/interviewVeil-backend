@@ -1,15 +1,21 @@
-name: Deploy backend
+# Runs on every push to main + manual dispatch. CI always runs; deploy runs on main after CI.
+name: Backend CI/CD
 
 on:
-  workflow_dispatch:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  ci:
+    name: Test and build
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -44,21 +50,28 @@ jobs:
           npm run build
 
   deploy:
-    needs: test
-    if: ${{ secrets.SSH_HOST != '' }}
+    name: Deploy to AWS (SSH)
+    needs: ci
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     steps:
+      - name: Verify deploy secrets
+        run: |
+          test -n "${{ secrets.SSH_HOST }}" || { echo "::error::Missing repository secret SSH_HOST"; exit 1; }
+          test -n "${{ secrets.SSH_USER }}" || { echo "::error::Missing repository secret SSH_USER"; exit 1; }
+          test -n "${{ secrets.SSH_PRIVATE_KEY }}" || { echo "::error::Missing repository secret SSH_PRIVATE_KEY"; exit 1; }
+
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT != '' && secrets.SSH_PORT || '22' }}
+          port: 22
           script_stop: true
           script: |
             set -euo pipefail
-            APP="${{ secrets.DEPLOY_PATH != '' && secrets.DEPLOY_PATH || '/var/www/interviewveil' }}"
+            APP="/var/www/interviewveil"
             cd "$APP"
             git fetch origin
             git checkout main
