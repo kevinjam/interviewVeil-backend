@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -42,8 +45,7 @@ jobs:
 
   deploy:
     needs: test
-    # Skipped until SSH_* repository secrets are set (see deploy/native/README.md).
-    if: secrets.SSH_HOST != ''
+    if: ${{ secrets.SSH_HOST != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
@@ -52,11 +54,11 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
+          port: ${{ secrets.SSH_PORT != '' && secrets.SSH_PORT || '22' }}
           script_stop: true
           script: |
             set -euo pipefail
-            APP="${{ secrets.DEPLOY_PATH || '/var/www/interviewveil' }}"
+            APP="${{ secrets.DEPLOY_PATH != '' && secrets.DEPLOY_PATH || '/var/www/interviewveil' }}"
             cd "$APP"
             git fetch origin
             git checkout main
