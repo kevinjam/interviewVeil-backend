@@ -7,6 +7,7 @@ dist
 .env.*
 !.env.example
 !.env.test.example
+!.env.prod.example
 
 # PM2 / runtime logs on the server (if copied locally)
 logs

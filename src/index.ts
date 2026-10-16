@@ -11,6 +11,7 @@ import { adminChat, chat } from "./chat/routes.js";
 import { runMigrations } from "./db/client.js";
 import { AppError, UnauthorizedError, errorJson } from "./errors.js";
 import { proxy } from "./proxy.js";
+import { clientIp, rateLimited } from "./rateLimit.js";
 import { recentUsage } from "./tokens.js";
 
 export const app = new Hono();
@@ -102,6 +103,17 @@ app.use("*", async (c, next) => {
       ms: Date.now() - start,
     });
   }
+});
+
+/** Landing-page installer clicks (sendBeacon). No auth; rate-limited per IP. */
+app.post("/public/download", async (c) => {
+  const ip = clientIp(c.req.header("x-forwarded-for"));
+  if (rateLimited(`download:${ip}`, 120, 60_000)) {
+    return c.body(null, 429);
+  }
+  const body = (await c.req.json<{ platform?: string; path?: string }>().catch(() => null)) ?? {};
+  httpLog.info("download", { platform: body.platform, path: body.path, ip });
+  return c.body(null, 204);
 });
 
 app.get("/account", async (c) => {
