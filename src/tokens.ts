@@ -83,6 +83,15 @@ export async function getTokenState(userId: string, now = new Date()): Promise<T
         .returning();
     }
 
+    const expectedTokens = PLANS[user.plan].tokensPerMonth;
+    if (user.plan !== "free" && row.allowance !== expectedTokens) {
+      [row] = await tx
+        .update(tokenBalances)
+        .set({ balance: expectedTokens, allowance: expectedTokens })
+        .where(eq(tokenBalances.userId, userId))
+        .returning();
+    }
+
     return {
       plan: user.plan,
       balance: row.balance,

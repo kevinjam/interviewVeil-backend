@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import type Stripe from "stripe";
-import { webLink } from "../config.js";
+import { config, webLink } from "../config.js";
 import { db } from "../db/client.js";
 import { subscriptions, users, type PaidPlan, type User } from "../db/schema.js";
 import { AppError } from "../errors.js";
@@ -33,17 +33,34 @@ async function currentSubscription(userId: string) {
   return sub && LIVE_STATUSES.has(sub.status) ? sub : null;
 }
 
+/** First paid checkout only — returning subscribers are not offered another trial. */
+async function trialDaysForCheckout(userId: string): Promise<number | undefined> {
+  const days = config.billingTrialDays;
+  if (days <= 0) return undefined;
+  const [prior] = await db.select({ userId: subscriptions.userId }).from(subscriptions).where(eq(subscriptions.userId, userId));
+  return prior ? undefined : days;
+}
+
 /** New subscriber: Stripe Checkout URL for `plan`. */
 export async function createCheckout(user: User, plan: PaidPlan): Promise<string> {
   if (await currentSubscription(user.id)) {
     throw new AppError(409, "already_subscribed", "You already have a subscription — change plans from your dashboard.");
   }
+  const trialDays = await trialDaysForCheckout(user.id);
   const session = await stripe().checkout.sessions.create({
     mode: "subscription",
     customer: await ensureCustomer(user),
     line_items: [{ price: await priceIdFor(plan), quantity: 1 }],
     client_reference_id: user.id,
-    subscription_data: { metadata: { user_id: user.id } },
+    subscription_data: {
+      metadata: { user_id: user.id },
+      ...(trialDays
+        ? {
+            trial_period_days: trialDays,
+            trial_settings: { end_behavior: { missing_payment_method: "cancel" } },
+          }
+        : {}),
+    },
     allow_promotion_codes: true,
     success_url: webLink("/dashboard?checkout=success"),
     cancel_url: webLink("/pricing?checkout=cancelled"),
@@ -151,13 +168,23 @@ export async function resumeSubscription(user: User): Promise<void> {
   await db.update(subscriptions).set({ cancelAtPeriodEnd: false }).where(eq(subscriptions.userId, user.id));
 }
 
-/** Stripe customer portal: invoices, payment method, cancellation. */
-export async function portalUrl(user: User): Promise<string> {
+export type PortalFlow = "default" | "payment_method_update";
+
+/** Stripe customer portal (payment method update uses a focused portal flow). */
+export async function portalUrl(
+  user: User,
+  opts: { returnPath?: string; flow?: PortalFlow } = {},
+): Promise<string> {
   if (!user.stripeCustomerId) throw new AppError(404, "no_billing_account", "You haven't purchased a plan yet.");
-  const session = await stripe().billingPortal.sessions.create({
+  const returnPath = opts.returnPath?.startsWith("/dashboard") ? opts.returnPath : "/dashboard/billing";
+  const params: Stripe.BillingPortal.SessionCreateParams = {
     customer: user.stripeCustomerId,
     configuration: await portalConfiguration(),
-    return_url: webLink("/dashboard"),
-  });
+    return_url: webLink(returnPath),
+  };
+  if (opts.flow === "payment_method_update") {
+    params.flow_data = { type: "payment_method_update" };
+  }
+  const session = await stripe().billingPortal.sessions.create(params);
   return session.url;
 }

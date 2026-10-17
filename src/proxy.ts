@@ -2,13 +2,16 @@ import { eq } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { stream } from "hono/streaming";
 import { currentUser } from "./auth/sessions.js";
+import { parseUpstreamError, upstreamErrorResponse } from "./ai/errors.js";
+import { currentAiProvider, aiMessagesUpstream, isAiConfigured, lacksModernParams } from "./ai/provider.js";
 import { config, MAX_OUTPUT_TOKENS } from "./config.js";
 import { db } from "./db/client.js";
 import { audioUsage, type User } from "./db/schema.js";
 import { AppError, UnauthorizedError, errorJson } from "./errors.js";
 import { rateLimited } from "./rateLimit.js";
 import { refundAudioSeconds, reserveAudioSeconds } from "./audio.js";
-import { createLogger, logUserId } from "./logger.js";
+import { createLogger, logUserId, patchLogContext, serializeError } from "./logger.js";
+import { modelForRequest } from "./plans.js";
 import { commitToken, refundToken, reserveToken } from "./tokens.js";
 
 const log = createLogger("proxy");
@@ -32,7 +35,7 @@ const handle =
       return await fn(c);
     } catch (e) {
       if (e instanceof AppError) return errorJson(c, e);
-      log.error("handler failed", { error: e instanceof Error ? e.message : String(e) });
+      log.error("handler failed", serializeError(e));
       return errorJson(c, new AppError(502, "api_error", "The AI service is unavailable. Please try again."));
     }
   };
@@ -47,6 +50,8 @@ export class StreamOutcome {
   failed = false;
   inputTokens = 0;
   outputTokens = 0;
+  /** Set when the provider sends an SSE `error` event. */
+  errorMessage: string | null = null;
 
   feed(chunk: string) {
     this.buffer += chunk;
@@ -67,6 +72,7 @@ export class StreamOutcome {
       message?: { usage?: { input_tokens?: number } };
       delta?: { stop_reason?: string };
       usage?: { output_tokens?: number };
+      error?: unknown;
     };
     try {
       evt = JSON.parse(data);
@@ -86,6 +92,7 @@ export class StreamOutcome {
         break;
       case "error":
         this.failed = true;
+        this.errorMessage = parseUpstreamError(502, JSON.stringify(evt.error ?? evt)).message;
         break;
     }
   }
@@ -95,95 +102,149 @@ export class StreamOutcome {
   }
 }
 
-/** Haiku 4.5 supports neither `effort` nor server-side fallbacks. */
-const lacksModernParams = (model: string) => model.startsWith("claude-haiku-4");
-
 /** Anthropic Messages API passthrough. The desktop app's SDK points its baseURL here. */
 proxy.post(
   "/v1/messages",
   handle(async (c) => {
     const user = await requireUser(c);
-    if (!config.anthropicKey) throw new AppError(503, "api_error", "The AI service isn't configured.");
+    patchLogContext({ user: logUserId(user.id) });
+    if (!isAiConfigured()) throw new AppError(503, "api_error", "The AI service isn't configured.");
 
     const body = (await c.req.json()) as Record<string, unknown>;
     // Hold one token now (atomic; blocks at 0). Charged on success, refunded on failure.
     const state = await reserveToken(user.id);
-    log.info("AI request started", {
-      user: logUserId(user.id),
-      plan: state.plan,
-      model: state.model,
-      kind: c.req.header("x-interviewveil-kind")?.slice(0, 32) ?? null,
-      tokensAfterReserve: state.balance,
-    });
+    const provider = currentAiProvider();
 
-    // Model routing: always the plan's model, whatever the client asked for.
-    body.model = state.model;
+    // Model routing: Claude plan tier, or MODEL_OPENROUTER when AI_PROVIDER=openrouter.
+    const mode = c.req.header("x-interviewveil-mode")?.slice(0, 32) ?? null;
+    const requestModel = modelForRequest(state.plan, { mode });
+    body.model = requestModel;
     body.max_tokens = Math.min(Number(body.max_tokens) || MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
-    const legacy = lacksModernParams(state.model);
+    const legacy = lacksModernParams(requestModel);
     if (legacy) {
       delete body.output_config;
       delete body.fallbacks;
     }
     const kind = c.req.header("x-interviewveil-kind")?.slice(0, 32) ?? null;
 
-    const headers: Record<string, string> = {
-      "x-api-key": config.anthropicKey,
-      "anthropic-version": c.req.header("anthropic-version") ?? "2023-06-01",
-      "content-type": "application/json",
-    };
-    if (config.anthropicWorkspaceId) {
-      headers["anthropic-workspace-id"] = config.anthropicWorkspaceId;
-    }
     const beta = (c.req.header("anthropic-beta") ?? "")
       .split(",")
       .map((b) => b.trim())
       .filter((b) => b && !(legacy && b.startsWith("server-side-fallback")))
       .join(",");
-    if (beta) headers["anthropic-beta"] = beta;
+    const upstreamReq = aiMessagesUpstream(requestModel, {
+      search: new URL(c.req.url).search,
+      anthropicVersion: c.req.header("anthropic-version"),
+      anthropicBeta: beta || null,
+    });
+    body.model = upstreamReq.model;
+    log.info("AI request started", {
+      user: logUserId(user.id),
+      plan: state.plan,
+      provider,
+      model: upstreamReq.model,
+      kind,
+      tokensAfterReserve: state.balance,
+    });
 
     let upstream: Response;
     try {
-      upstream = await fetch(`https://api.anthropic.com/v1/messages${new URL(c.req.url).search}`, {
+      upstream = await fetch(upstreamReq.url, {
         method: "POST",
-        headers,
+        headers: upstreamReq.headers,
         body: JSON.stringify(body),
       });
     } catch (e) {
       await refundToken(user.id);
-      throw e;
+      log.error("AI upstream fetch failed", {
+        provider,
+        model: upstreamReq.model,
+        host: safeHost(upstreamReq.url),
+        ...serializeError(e),
+      });
+      throw new AppError(502, "api_error", "The AI service is unavailable. Please try again.");
     }
 
     if (!upstream.ok || !upstream.body) {
       await refundToken(user.id);
-      return new Response(await upstream.text(), {
+      const raw = await upstream.text();
+      const { info, json } = upstreamErrorResponse(upstream.status, raw);
+      log.error("AI upstream error", {
+        provider,
+        model: upstreamReq.model,
+        host: safeHost(upstreamReq.url),
         status: upstream.status,
-        headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
+        type: info.type,
+        code: info.code,
+        vendor: info.provider,
+        message: info.message,
+        body: info.detail,
+      });
+      return new Response(json, {
+        status: upstream.status,
+        headers: { "content-type": "application/json" },
       });
     }
 
-    const settle = async (ok: boolean, inputTokens?: number, outputTokens?: number) => {
+    const settle = async (ok: boolean, extra?: { inputTokens?: number; outputTokens?: number; reason?: string }) => {
       if (ok) {
-        await commitToken(user.id, { plan: state.plan, model: state.model, kind, inputTokens, outputTokens });
+        await commitToken(user.id, {
+          plan: state.plan,
+          model: upstreamReq.model,
+          kind,
+          inputTokens: extra?.inputTokens,
+          outputTokens: extra?.outputTokens,
+        });
         log.info("AI request committed", {
           user: logUserId(user.id),
           kind,
-          inputTokens,
-          outputTokens,
+          model: upstreamReq.model,
+          inputTokens: extra?.inputTokens,
+          outputTokens: extra?.outputTokens,
         });
       } else {
         await refundToken(user.id);
-        log.info("AI request refunded", { user: logUserId(user.id), kind });
+        log.warn("AI request refunded", { user: logUserId(user.id), kind, model: upstreamReq.model, reason: extra?.reason });
       }
     };
 
     // Non-streaming request: success = 200 with a non-refusal stop reason.
     if (!(upstream.headers.get("content-type") ?? "").includes("text/event-stream")) {
       const text = await upstream.text();
-      const json = JSON.parse(text) as {
-        stop_reason?: string;
-        usage?: { input_tokens?: number; output_tokens?: number };
-      };
-      await settle(json.stop_reason !== "refusal", json.usage?.input_tokens, json.usage?.output_tokens);
+      let json: { type?: string; stop_reason?: string; usage?: { input_tokens?: number; output_tokens?: number } };
+      try {
+        json = JSON.parse(text) as typeof json;
+      } catch (e) {
+        await settle(false, { reason: "invalid_json" });
+        log.error("AI upstream returned non-JSON", {
+          provider,
+          model: upstreamReq.model,
+          body: text.slice(0, 2000),
+          ...serializeError(e),
+        });
+        throw new AppError(502, "api_error", "The AI service returned an invalid response.");
+      }
+      if (json.type === "error") {
+        const info = parseUpstreamError(200, text);
+        await settle(false, { reason: info.message });
+        log.error("AI upstream error in 200 body", {
+          provider,
+          model: upstreamReq.model,
+          type: info.type,
+          message: info.message,
+          body: info.detail,
+        });
+        return new Response(JSON.stringify({ type: "error", error: { type: info.type, message: info.message } }), {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      const refused = json.stop_reason === "refusal";
+      await settle(!refused, {
+        inputTokens: json.usage?.input_tokens,
+        outputTokens: json.usage?.output_tokens,
+        reason: refused ? "refusal" : undefined,
+      });
       return new Response(text, { status: 200, headers: { "content-type": "application/json" } });
     }
 
@@ -202,15 +263,34 @@ proxy.post(
           if (s.aborted) break; // client went away: they never got the full answer
         }
       } catch (e) {
-        log.error("stream relay failed", { error: e instanceof Error ? e.message : String(e) });
+        log.error("stream relay failed", { model: upstreamReq.model, ...serializeError(e) });
       } finally {
-        await settle(outcome.succeeded && !s.aborted, outcome.inputTokens, outcome.outputTokens).catch((e) =>
-          log.error("token settle failed", { error: e instanceof Error ? e.message : String(e) }),
-        );
+        const reason = s.aborted
+          ? "client_disconnected"
+          : outcome.errorMessage
+            ? outcome.errorMessage
+            : outcome.failed
+              ? "stream_error"
+              : outcome.completed
+                ? undefined
+                : "incomplete_stream";
+        await settle(outcome.succeeded && !s.aborted, {
+          inputTokens: outcome.inputTokens,
+          outputTokens: outcome.outputTokens,
+          reason,
+        }).catch((e) => log.error("token settle failed", serializeError(e)));
       }
     });
   }),
 );
+
+function safeHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "unknown";
+  }
+}
 
 /** 16-bit mono WAV duration from its header; falls back to byte size at 16 kHz. */
 function wavSeconds(buf: ArrayBuffer): number {
@@ -229,6 +309,7 @@ proxy.post(
   "/v1/audio/transcriptions",
   handle(async (c) => {
     const user = await requireUser(c);
+    patchLogContext({ user: logUserId(user.id) });
     if (!config.sttKey) throw new AppError(503, "api_error", "Transcription isn't configured.");
 
     const form = await c.req.formData();
@@ -252,18 +333,36 @@ proxy.post(
     const prompt = form.get("prompt");
     if (typeof prompt === "string" && prompt) upstreamForm.append("prompt", prompt.slice(-800));
 
-    const upstream = await fetch(`${config.sttBaseUrl}/audio/transcriptions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${config.sttKey}` },
-      body: upstreamForm,
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${config.sttBaseUrl}/audio/transcriptions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.sttKey}` },
+        body: upstreamForm,
+      });
+    } catch (e) {
+      await refundAudioSeconds(user.id, seconds);
+      sttLog.error("transcription fetch failed", {
+        user: logUserId(user.id),
+        host: safeHost(config.sttBaseUrl),
+        seconds,
+        ...serializeError(e),
+      });
+      throw new AppError(502, "api_error", "Transcription is unavailable. Please try again.");
+    }
     const text = await upstream.text();
     if (!upstream.ok) {
       await refundAudioSeconds(user.id, seconds);
-      sttLog.warn("transcription upstream error", {
+      const info = parseUpstreamError(upstream.status, text);
+      sttLog.error("transcription upstream error", {
         user: logUserId(user.id),
+        host: safeHost(config.sttBaseUrl),
         status: upstream.status,
         seconds,
+        type: info.type,
+        code: info.code,
+        message: info.message,
+        body: info.detail,
       });
     } else {
       await db.insert(audioUsage).values({ userId: user.id, seconds });

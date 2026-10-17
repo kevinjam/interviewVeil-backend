@@ -60,11 +60,23 @@ All plan definitions live in `backend/src/plans.ts`.
 
 **Model routing.** `modelForPlan()` is the only place a model is chosen. The proxy always overwrites the model the client asks for, so a plan can never reach a higher tier.
 
+**AI provider.** Chat (`POST /v1/messages`) defaults to Anthropic. Transcription stays on OpenAI (`STT_*`). Plan models (`MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS`) are production Claude IDs and should not be overwritten for testing.
+
+To try another chat model locally via [OpenRouter](https://openrouter.ai):
+
+```
+AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-...
+MODEL_OPENROUTER=cohere/north-mini-code:free
+```
+
+Comment out `AI_PROVIDER` (or set `anthropic`) to go back to Claude. OpenRouter uses **one** model for every plan; it does not replace the three Claude tier IDs.
+
 **Tokens.** 1 token = 1 AI response.
 
 **Listening.** Transcription uses **audio seconds** from your plan (separate from tokens). Each transcribed segment deducts its duration in seconds; failed upstream calls are refunded. The desktop sends WAV segments over **`POST /v1/audio/transcriptions`** (not a WebSocket). Real-time conversation streaming like Tech Screen would be a separate WebSocket endpoint and client work.
 
-**Logging.** Set `LOG_LEVEL=debug` in `.env` for per-request timing on `/v1/*`, `/account`, and `/usage`, plus `[stt]`, `[audio]`, and `[proxy]` lines for transcription and AI proxy.
+**Logging.** Every request gets an `x-request-id` (echoed on the response; sent inbound if you set it). Failures log that id plus provider, model, HTTP status, and the nested error body — including OpenRouter's `metadata.raw` behind the useless `"Provider returned error"` message. 4xx/5xx are always logged; `/v1/*` timing is `LOG_LEVEL=debug`. Production emits JSON lines (`LOG_FORMAT=json`); local stays readable (`pretty`).
 - Each request holds a token atomically up front, so concurrent requests can't overspend.
 - The token is charged only when the response streams to completion without an error or refusal.
 - If the request fails, is refused, or the client disconnects, the token is refunded.

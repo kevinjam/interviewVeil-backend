@@ -38,7 +38,7 @@ Internet ──► Caddy (HTTPS) ──► API container ──► RDS Postgres
 6. Create `backend/.env` from `.env.example` and fill in at least:
    - `PUBLIC_URL`, `API_DOMAIN`, `WEB_URL`, `COOKIE_DOMAIN`
    - `DATABASE_URL` (from step 1)
-   - `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` if using an unscoped user key)
+   - `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` if using an unscoped user key). Production chat uses Anthropic (`AI_PROVIDER=anthropic`). OpenRouter is optional for testing (`AI_PROVIDER=openrouter` + `OPENROUTER_API_KEY`).
    - `STT_API_KEY`
    - the Stripe keys
    - the Google and GitHub OAuth keys

@@ -1,12 +1,13 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { accountSummary } from "./account.js";
+import { aiProviderEnvName, isAiConfigured } from "./ai/provider.js";
 import { auth } from "./auth/routes.js";
 import { currentUser, SESSION_COOKIE } from "./auth/sessions.js";
 import { billing } from "./billing/routes.js";
 import { stripeWebhook } from "./billing/webhooks.js";
 import { config } from "./config.js";
-import { createLogger, setLogLevel } from "./logger.js";
+import { createLogger, newRequestId, runWithLogContext, serializeError, setLogFormat, setLogLevel } from "./logger.js";
 import { adminChat, chat } from "./chat/routes.js";
 import { runMigrations } from "./db/client.js";
 import { AppError, UnauthorizedError, errorJson } from "./errors.js";
@@ -15,6 +16,12 @@ import { clientIp, rateLimited } from "./rateLimit.js";
 import { recentUsage } from "./tokens.js";
 
 export const app = new Hono();
+
+app.use("*", async (c, next) => {
+  const requestId = newRequestId(c.req.header("x-request-id"));
+  await runWithLogContext({ requestId, method: c.req.method, path: c.req.path }, () => next());
+  c.res.headers.set("x-request-id", requestId);
+});
 
 const ALLOWED_HEADERS = [
   "content-type",
@@ -25,6 +32,7 @@ const ALLOWED_HEADERS = [
   "authorization",
   "x-interviewveil-session",
   "x-interviewveil-kind",
+  "x-interviewveil-mode",
   "x-chat-token",
   "x-stainless-arch",
   "x-stainless-lang",
@@ -91,18 +99,15 @@ app.get("/config", (c) => c.json({ difficulty: config.difficulty }));
 
 const httpLog = createLogger("http");
 app.use("*", async (c, next) => {
-  const path = c.req.path;
-  const traced = path.startsWith("/v1/") || path === "/account" || path === "/usage";
-  const start = traced ? Date.now() : 0;
+  const start = Date.now();
   await next();
-  if (traced) {
-    httpLog.debug("request", {
-      method: c.req.method,
-      path,
-      status: c.res.status,
-      ms: Date.now() - start,
-    });
-  }
+  const path = c.req.path;
+  const status = c.res.status;
+  const fields = { method: c.req.method, path, status, ms: Date.now() - start };
+  const traced = path.startsWith("/v1/") || path.startsWith("/webhooks/") || path === "/account" || path === "/usage";
+  if (status >= 500) httpLog.error("request", fields);
+  else if (status >= 400 && traced) httpLog.warn("request", fields);
+  else if (traced) httpLog.debug("request", fields);
 });
 
 /** Landing-page installer clicks (sendBeacon). No auth; rate-limited per IP. */
@@ -150,18 +155,19 @@ const bootLog = createLogger("boot");
 
 app.onError((err, c) => {
   if (err instanceof AppError) return errorJson(c, err);
-  bootLog.error("unhandled error", { path: c.req.path, error: err instanceof Error ? err.message : String(err) });
-  return c.text("Something went wrong.", 500);
+  httpLog.error("unhandled error", { path: c.req.path, ...serializeError(err) });
+  return errorJson(c, new AppError(500, "api_error", "Something went wrong."));
 });
 
 /** Start the HTTP server (`src/server.ts` calls this; tests import `app` directly). */
 export async function start() {
   setLogLevel(config.logLevel);
+  setLogFormat(config.logFormat);
   if (config.production && !config.brevoKey) {
     throw new Error("BREVO_API_KEY is required in production (password reset emails).");
   }
   const missing = [
-    !config.anthropicKey && "ANTHROPIC_API_KEY",
+    !isAiConfigured() && aiProviderEnvName(),
     !config.sttKey && "STT_API_KEY",
     !config.stripeSecret && "STRIPE_SECRET_KEY",
     config.stripeSecret && !config.stripeWebhookSecret && "STRIPE_WEBHOOK_SECRET",
@@ -176,5 +182,6 @@ export async function start() {
   serve({ fetch: app.fetch, port: config.port });
   bootLog.info(`listening on ${config.publicUrl} (port ${config.port}); website ${config.webUrl}`, {
     logLevel: config.logLevel,
+    logFormat: config.logFormat,
   });
 }

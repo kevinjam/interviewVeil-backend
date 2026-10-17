@@ -1,3 +1,4 @@
+import { currentAiProvider, openRouterModel } from "./ai/provider.js";
 import { config } from "./config.js";
 import type { PaidPlan, Plan } from "./db/schema.js";
 
@@ -34,7 +35,7 @@ export const PLANS: Record<Plan, PlanDefinition> = {
     name: "Essential",
     priceCents: 1100,
     tokensPerMonth: 50,
-    audioSecondsPerMonth: 2 * 60 * 60,
+    audioSecondsPerMonth: 60 * 60,
     tier: "haiku",
     rank: 1,
     tagline: "Steady weekly practice.",
@@ -44,7 +45,7 @@ export const PLANS: Record<Plan, PlanDefinition> = {
     name: "Professional",
     priceCents: 2400,
     tokensPerMonth: 160,
-    audioSecondsPerMonth: 6 * 60 * 60,
+    audioSecondsPerMonth: 180 * 60,
     tier: "sonnet",
     rank: 2,
     tagline: "Daily practice with a stronger coach.",
@@ -54,7 +55,7 @@ export const PLANS: Record<Plan, PlanDefinition> = {
     name: "Expert",
     priceCents: 4400,
     tokensPerMonth: 500,
-    audioSecondsPerMonth: 15 * 60 * 60,
+    audioSecondsPerMonth: 400 * 60,
     tier: "opus",
     rank: 3,
     tagline: "Maximum allowance for intensive prep.",
@@ -75,6 +76,18 @@ export const TIER_LABEL: Record<ModelTier, string> = {
  */
 export function modelForPlan(plan: Plan): string {
   return config.models[PLANS[plan].tier];
+}
+
+/**
+ * Upstream model for this request.
+ * - anthropic (production): plan tier → MODEL_HAIKU / MODEL_SONNET / MODEL_OPUS
+ * - openrouter (testing): MODEL_OPENROUTER for every plan (MODEL_* are left alone)
+ */
+export function modelForRequest(plan: Plan, _opts?: { mode?: string | null }): string {
+  if (currentAiProvider() === "openrouter") {
+    return openRouterModel() ?? modelForPlan(plan);
+  }
+  return modelForPlan(plan);
 }
 
 export function isPaidPlan(plan: string): plan is PaidPlan {

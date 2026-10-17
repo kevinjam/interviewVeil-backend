@@ -8,8 +8,9 @@ import { applyInvoicePaid, applySubscription, processEvent } from "../src/billin
 import { db } from "../src/db/client.js";
 import { subscriptions, tokenBalances, usageHistory, users } from "../src/db/schema.js";
 import { InsufficientTokensError } from "../src/errors.js";
-import { comparePlans, modelForPlan, PLANS, priceLookupKey } from "../src/plans.js";
+import { comparePlans, modelForPlan, modelForRequest, PLANS, priceLookupKey } from "../src/plans.js";
 import { StreamOutcome } from "../src/proxy.js";
+import { getAudioState } from "../src/audio.js";
 import {
   addMonths,
   commitToken,
@@ -77,6 +78,19 @@ describe("plans and model routing", () => {
     assert.equal(modelForPlan("essential"), "claude-haiku-4-5");
     assert.equal(modelForPlan("professional"), "claude-sonnet-5-5");
     assert.equal(modelForPlan("expert"), "claude-opus-5-5");
+  });
+
+  it("uses MODEL_OPENROUTER for every plan when AI_PROVIDER=openrouter", () => {
+    process.env.AI_PROVIDER = "openrouter";
+    process.env.MODEL_OPENROUTER = "cohere/north-mini-code:free";
+    try {
+      assert.equal(modelForRequest("free"), "cohere/north-mini-code:free");
+      assert.equal(modelForRequest("expert"), "cohere/north-mini-code:free");
+      assert.equal(modelForPlan("expert"), "claude-opus-5-5");
+    } finally {
+      delete process.env.AI_PROVIDER;
+      delete process.env.MODEL_OPENROUTER;
+    }
   });
 
   it("matches the published price list", () => {
@@ -164,6 +178,47 @@ describe("token balance", () => {
 });
 
 describe("stripe webhooks", () => {
+  it("trialing grants paid allowance before the first invoice", async () => {
+    const u = await newUser();
+    await db.transaction((tx) =>
+      applySubscription(tx, fakeSubscription(u.stripeCustomerId, "essential", { status: "trialing" })),
+    );
+    const s = await getTokenState(u.id);
+    assert.equal(s.plan, "essential");
+    assert.equal(s.balance, 50);
+    const audio = await getAudioState(u.id);
+    assert.equal(audio.allowance, PLANS.essential.audioSecondsPerMonth);
+    assert.equal(audio.balance, PLANS.essential.audioSecondsPerMonth);
+  });
+
+  it("incomplete subscription row does not block grants when checkout completes", async () => {
+    const u = await newUser();
+    await db.transaction((tx) =>
+      applySubscription(tx, fakeSubscription(u.stripeCustomerId, "essential", { status: "incomplete" })),
+    );
+    assert.equal((await getTokenState(u.id)).balance, 3);
+    assert.equal((await getAudioState(u.id)).allowance, PLANS.free.audioSecondsPerMonth);
+
+    await db.transaction((tx) =>
+      applySubscription(tx, fakeSubscription(u.stripeCustomerId, "essential", { status: "trialing" })),
+    );
+    assert.equal((await getTokenState(u.id)).balance, 50);
+    assert.equal((await getAudioState(u.id)).allowance, PLANS.essential.audioSecondsPerMonth);
+  });
+
+  it("expired trial (canceled) returns the user to Free", async () => {
+    const u = await newUser();
+    await db.transaction((tx) =>
+      applySubscription(tx, fakeSubscription(u.stripeCustomerId, "essential", { status: "trialing" })),
+    );
+    await db.transaction((tx) =>
+      applySubscription(tx, fakeSubscription(u.stripeCustomerId, "essential", { status: "canceled" })),
+    );
+    const s = await getTokenState(u.id);
+    assert.equal(s.plan, "free");
+    assert.equal(s.balance, 3);
+  });
+
   it("first payment activates the plan and its full allowance", async () => {
     const u = await newUser();
     await db.transaction(async (tx) => {
@@ -280,5 +335,6 @@ describe("stream outcome", () => {
     const errored = new StreamOutcome();
     errored.feed(sse("error", { error: { type: "overloaded_error" } }) + sse("message_stop"));
     assert.equal(errored.succeeded, false);
+    assert.match(errored.errorMessage ?? "", /overloaded/);
   });
 });

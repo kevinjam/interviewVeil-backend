@@ -72,6 +72,21 @@ export async function getAudioState(userId: string, now = new Date()): Promise<A
         .returning();
     }
 
+    const expectedAudio = PLANS[user.plan].audioSecondsPerMonth;
+    if (user.plan !== "free" && row.allowance !== expectedAudio) {
+      log.warn("repairing listening allowance for paid plan", {
+        user: logUserId(userId),
+        plan: user.plan,
+        allowance: row.allowance,
+        expected: expectedAudio,
+      });
+      [row] = await tx
+        .update(audioBalances)
+        .set({ balance: expectedAudio, allowance: expectedAudio })
+        .where(eq(audioBalances.userId, userId))
+        .returning();
+    }
+
     return {
       plan: user.plan,
       balance: row.balance,

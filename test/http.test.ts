@@ -249,6 +249,64 @@ describe("AI proxy", () => {
     const res = await app.request("/v1/messages", { method: "POST", body: "{}" });
     assert.equal(res.status, 401);
   });
+
+  it("forwards to OpenRouter when AI_PROVIDER=openrouter", async () => {
+    process.env.AI_PROVIDER = "openrouter";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    process.env.MODEL_OPENROUTER = "cohere/north-mini-code:free";
+    let lastUrl = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      lastUrl = String(input instanceof Request ? input.url : input);
+      lastBody = JSON.parse(String(init?.body));
+      lastHeaders = new Headers(init?.headers);
+      return new Response(fullStream, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+    try {
+      const token = await desktopToken();
+      const res = await ask(token, "claude-opus-5-5");
+      assert.equal(res.status, 200);
+      assert.equal(lastUrl, "https://openrouter.ai/api/v1/messages");
+      assert.equal(lastBody?.model, "cohere/north-mini-code:free");
+      assert.equal(lastHeaders?.get("authorization"), "Bearer sk-or-test");
+      assert.equal(lastHeaders?.get("anthropic-workspace-id"), null);
+    } finally {
+      delete process.env.AI_PROVIDER;
+      delete process.env.OPENROUTER_API_KEY;
+      delete process.env.MODEL_OPENROUTER;
+    }
+  });
+
+  it("unwraps OpenRouter Provider returned error for the client", async () => {
+    process.env.AI_PROVIDER = "openrouter";
+    process.env.OPENROUTER_API_KEY = "sk-or-test";
+    process.env.MODEL_OPENROUTER = "cohere/north-mini-code:free";
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "Provider returned error",
+            code: 400,
+            metadata: {
+              raw: JSON.stringify({ message: "prompt is too long" }),
+              provider_name: "Cohere",
+            },
+          },
+        }),
+        { status: 400, headers: { "content-type": "application/json" } },
+      )) as typeof fetch;
+    try {
+      const token = await desktopToken();
+      const res = await ask(token);
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.equal(body.error.message, "Cohere: prompt is too long");
+      assert.match(res.headers.get("x-request-id") ?? "", /^[\w.-]{8,}$/);
+    } finally {
+      delete process.env.AI_PROVIDER;
+      delete process.env.OPENROUTER_API_KEY;
+      delete process.env.MODEL_OPENROUTER;
+    }
+  });
 });
 
 describe("transcription proxy", () => {
@@ -347,5 +405,10 @@ describe("website integration", () => {
   it("returns 401 JSON for the dashboard data when signed out", async () => {
     const res = await app.request("/account", { headers: { origin: WEB } });
     assert.equal(res.status, 401);
+  });
+
+  it("assigns a request id on every response", async () => {
+    const res = await app.request("/health");
+    assert.match(res.headers.get("x-request-id") ?? "", /^[\w.-]{8,}$/);
   });
 });

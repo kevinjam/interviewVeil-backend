@@ -3,11 +3,14 @@ import type { Context } from "hono";
 import type Stripe from "stripe";
 import { config } from "../config.js";
 import { db, type Tx } from "../db/client.js";
-import { stripeEvents, subscriptions, users } from "../db/schema.js";
+import { stripeEvents, subscriptions, users, type PaidPlan, type Subscription } from "../db/schema.js";
 import { resetAudioForPeriod } from "../audio.js";
 import { addMonths, resetForPeriod } from "../tokens.js";
 import { LIVE_STATUSES } from "./service.js";
+import { createLogger, serializeError } from "../logger.js";
 import { planFromPrice, stripe } from "./stripe.js";
+
+const log = createLogger("stripe");
 
 const customerId = (c: string | { id: string } | null): string | null =>
   typeof c === "string" ? c : (c?.id ?? null);
@@ -27,15 +30,31 @@ async function findUserId(tx: Tx, customer: string | null, metadataUserId?: stri
   return null;
 }
 
+function shouldGrantSubscriptionAllowances(
+  existing: Subscription | undefined,
+  sub: Stripe.Subscription,
+  plan: PaidPlan,
+): boolean {
+  if (!existing || existing.stripeSubscriptionId !== sub.id) return true;
+  const periodStart = new Date(sub.current_period_start * 1000);
+  if (existing.currentPeriodStart.getTime() !== periodStart.getTime()) return true;
+  if (existing.plan !== plan) return true;
+  // `subscription.created` often lands as `incomplete` (row written, no grant). When checkout
+  // completes as `trialing`/`active`, period+plan match the stale row and we'd skip grants.
+  if (LIVE_STATUSES.has(sub.status) && !LIVE_STATUSES.has(existing.status)) return true;
+  return false;
+}
+
 /**
  * Mirror a Stripe subscription into the database and set the user's effective
- * plan. Token balances are not touched here except when the subscription ends.
+ * plan. Grants tokens/audio when a subscription (or trial) period starts;
+ * revokes paid access when the subscription ends.
  */
 export async function applySubscription(tx: Tx, sub: Stripe.Subscription): Promise<void> {
   const userId = await findUserId(tx, customerId(sub.customer), sub.metadata?.user_id);
-  if (!userId) return console.warn(`stripe: no user for subscription ${sub.id}`);
+  if (!userId) return log.warn("no user for subscription", { subscription: sub.id });
   const plan = planFromPrice(sub.items.data[0]?.price);
-  if (!plan) return console.warn(`stripe: subscription ${sub.id} has an unknown price`);
+  if (!plan) return log.warn("subscription has an unknown price", { subscription: sub.id });
 
   const [existing] = await tx.select().from(subscriptions).where(eq(subscriptions.userId, userId));
   const sameSub = existing?.stripeSubscriptionId === sub.id;
@@ -59,8 +78,14 @@ export async function applySubscription(tx: Tx, sub: Stripe.Subscription): Promi
     .onConflictDoUpdate({ target: subscriptions.userId, set: row });
 
   const [user] = await tx.select({ plan: users.plan }).from(users).where(eq(users.id, userId));
+  const periodStart = new Date(sub.current_period_start * 1000);
+  const periodEnd = new Date(sub.current_period_end * 1000);
   if (LIVE_STATUSES.has(sub.status)) {
     if (user.plan !== plan) await tx.update(users).set({ plan }).where(eq(users.id, userId));
+    if (shouldGrantSubscriptionAllowances(existing, sub, plan)) {
+      await resetForPeriod(tx, userId, plan, periodStart, periodEnd);
+      await resetAudioForPeriod(tx, userId, plan, periodStart, periodEnd);
+    }
   } else if (sub.status !== "incomplete" && user.plan !== "free") {
     // Canceled / expired / unpaid: back to Free with a fresh monthly allowance.
     const now = new Date();
@@ -77,10 +102,10 @@ export async function applyInvoicePaid(tx: Tx, invoice: Stripe.Invoice): Promise
   }
   const line = invoice.lines.data.find((l) => l.price && planFromPrice(l.price));
   const plan = planFromPrice(line?.price);
-  if (!line || !plan) return console.warn(`stripe: invoice ${invoice.id} has no InterviewVeil plan line`);
+  if (!line || !plan) return log.warn("invoice has no InterviewVeil plan line", { invoice: invoice.id });
 
   const userId = await findUserId(tx, customerId(invoice.customer), invoice.subscription_details?.metadata?.user_id);
-  if (!userId) return console.warn(`stripe: no user for invoice ${invoice.id}`);
+  if (!userId) return log.warn("no user for invoice", { invoice: invoice.id });
 
   await tx.update(users).set({ plan }).where(eq(users.id, userId));
   const [existing] = await tx.select().from(subscriptions).where(eq(subscriptions.userId, userId));
@@ -140,13 +165,14 @@ export async function stripeWebhook(c: Context) {
       config.stripeWebhookSecret,
     );
   } catch (e) {
+    log.warn("webhook signature verification failed", serializeError(e));
     return c.text(`Webhook signature verification failed: ${e instanceof Error ? e.message : e}`, 400);
   }
   try {
     const applied = await processEvent(event);
     return c.json({ received: true, duplicate: !applied });
   } catch (e) {
-    console.error(`stripe webhook ${event.type} ${event.id} failed`, e);
+    log.error("webhook processing failed", { type: event.type, id: event.id, ...serializeError(e) });
     return c.text("Webhook processing failed", 500); // Stripe will retry
   }
 }

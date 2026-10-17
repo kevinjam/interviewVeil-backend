@@ -17,6 +17,12 @@ const webUrl = (process.env.WEB_URL ?? "http://localhost:5173").replace(/\/$/, "
 export const config = {
   port: num("PORT", 8787),
   logLevel: oneOf(process.env.LOG_LEVEL?.toLowerCase(), ["debug", "info", "warn", "error"] as const, "info"),
+  /** pretty in local, json in production unless LOG_FORMAT overrides. */
+  logFormat: oneOf(
+    process.env.LOG_FORMAT?.toLowerCase() || (process.env.NODE_ENV === "production" ? "json" : "pretty"),
+    ["pretty", "json"] as const,
+    "pretty",
+  ),
   /** Public base URL of this API (OAuth callbacks, Stripe webhooks). e.g. https://api.interviewveil.app */
   publicUrl,
   /** The website (landing, login, dashboard). Users are redirected here. e.g. https://interviewveil.app */
@@ -34,7 +40,8 @@ export const config = {
   anthropicWorkspaceId: process.env.ANTHROPIC_WORKSPACE_ID ?? "",
   /**
    * Model per tier. Plans map to tiers in `plans.ts`; override here when
-   * Anthropic ships new model versions.
+   * Anthropic ships new model versions. Chat upstream is `AI_PROVIDER`
+   * (`anthropic` default, or `openrouter` + `MODEL_OPENROUTER` for testing).
    */
   models: {
     haiku: process.env.MODEL_HAIKU ?? "claude-haiku-4-5",
@@ -71,6 +78,8 @@ export const config = {
 
   stripeSecret: process.env.STRIPE_SECRET_KEY ?? "",
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? "",
+  /** Days on a paid plan before the first charge (first subscription only). Set 0 to disable. */
+  billingTrialDays: num("BILLING_TRIAL_DAYS", 3),
 
   difficulty: oneOf(process.env.PRACTICE_DIFFICULTY, ["easy", "medium", "hard"] as const, "medium"),
   /** Per-user AI requests per minute (fair use, all plans). */
