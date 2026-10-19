@@ -84,11 +84,113 @@ export function parseUpstreamError(status: number, body: string): UpstreamErrorI
   };
 }
 
-export function toAnthropicErrorJson(info: UpstreamErrorInfo) {
-  return { type: "error" as const, error: { type: info.type, message: info.message } };
+export type UserErrorContext = "ai" | "stt";
+
+/** Safe copy for the desktop app — never expose vendor slugs or raw provider bodies. */
+export function userFacingUpstreamMessage(info: UpstreamErrorInfo, ctx: UserErrorContext = "ai"): string {
+  const type = info.type.toLowerCase();
+  const m = info.message.toLowerCase();
+  const status = info.status;
+
+  if (type.includes("rate_limit") || status === 429 || m.includes("rate-limit") || m.includes("rate limited")) {
+    return ctx === "stt"
+      ? "Listening is busy right now. Wait a moment and try again."
+      : "InterviewVeil is busy right now. Wait a moment and try again.";
+  }
+
+  if (type === "overloaded_error" || status === 529 || m.includes("overloaded")) {
+    return "The AI coach is temporarily busy. Try again in a few seconds.";
+  }
+
+  if (
+    m.includes("prompt is too long") ||
+    m.includes("too many tokens") ||
+    m.includes("context length") ||
+    m.includes("maximum context")
+  ) {
+    return "That was too much to send at once. Use fewer screenshots or a shorter question.";
+  }
+
+  if (
+    m.includes("does not support image") ||
+    m.includes("image inputs") ||
+    m.includes("multimodal") ||
+    m.includes("vision")
+  ) {
+    return "We couldn't read this screenshot. Try again or contact support if it keeps happening.";
+  }
+
+  if (m.includes("agentic harness") || m.includes("permission_error") || type.includes("permission")) {
+    return "We couldn't generate an answer right now. Try again in a little while.";
+  }
+
+  if (status === 401 || status === 403 || type.includes("authentication") || type.includes("auth")) {
+    return "InterviewVeil couldn't reach the AI service. Try again later.";
+  }
+
+  if (status >= 500) {
+    return ctx === "stt"
+      ? "Transcription is temporarily unavailable. Please try again."
+      : "The AI service is temporarily unavailable. Please try again.";
+  }
+
+  if (status === 400 || type.includes("invalid")) {
+    return "We couldn't complete that request. Check your input and try again.";
+  }
+
+  return ctx === "stt"
+    ? "We couldn't transcribe that audio. Please try again."
+    : "We couldn't generate an answer. Please try again.";
 }
 
-export function upstreamErrorResponse(status: number, body: string): { info: UpstreamErrorInfo; json: string } {
+export function toAnthropicErrorJson(info: UpstreamErrorInfo, ctx: UserErrorContext = "ai") {
+  const message = userFacingUpstreamMessage(info, ctx);
+  return { type: "error" as const, error: { type: "api_error" as const, message } };
+}
+
+export function upstreamErrorResponse(
+  status: number,
+  body: string,
+  ctx: UserErrorContext = "ai",
+): { info: UpstreamErrorInfo; json: string } {
   const info = parseUpstreamError(status, body);
-  return { info, json: JSON.stringify(toAnthropicErrorJson(info)) };
+  return { info, json: JSON.stringify(toAnthropicErrorJson(info, ctx)) };
+}
+
+/** Rewrite SSE `error` events so streamed failures use InterviewVeil copy. */
+export function sanitizeSseErrorEvents(chunk: string, ctx: UserErrorContext = "ai"): string {
+  if (!chunk.includes("event:") && !chunk.includes("data:")) return chunk;
+
+  const parts = chunk.split("\n\n");
+  const out: string[] = [];
+
+  for (const raw of parts) {
+    if (!raw.trim()) continue;
+    const lines = raw.split("\n");
+    let eventType = "";
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      if (line.startsWith("event:")) eventType = line.slice(6).trim();
+      else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
+    }
+    const data = dataLines.join("\n");
+    if (eventType === "error" && data) {
+      let evt: { type?: string; error?: unknown };
+      try {
+        evt = JSON.parse(data) as { type?: string; error?: unknown };
+      } catch {
+        out.push(raw);
+        continue;
+      }
+      const info = parseUpstreamError(502, JSON.stringify(evt.error ?? evt));
+      const message = userFacingUpstreamMessage(info, ctx);
+      const sanitized = JSON.stringify({ type: "error", error: { type: "api_error", message } });
+      out.push(`event: error\ndata: ${sanitized}`);
+      continue;
+    }
+    out.push(raw);
+  }
+
+  const joined = out.join("\n\n");
+  return joined.endsWith("\n\n") || !chunk.endsWith("\n\n") ? joined : `${joined}\n\n`;
 }

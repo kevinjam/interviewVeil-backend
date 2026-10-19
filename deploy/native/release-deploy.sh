@@ -54,9 +54,12 @@ else
 fi
 set -e
 
-echo "==> PM2"
-pm2 delete interviewveil-api 2>/dev/null || true
-pm2 start ecosystem.config.cjs
+echo "==> PM2 (run this script as the deploy user — same user as pm2 startup)"
+if pm2 describe interviewveil-api >/dev/null 2>&1; then
+  pm2 reload ecosystem.config.cjs --update-env
+else
+  pm2 start ecosystem.config.cjs
+fi
 pm2 save
 
 echo "==> health check (port ${PORT})"
@@ -83,3 +86,8 @@ fi
 curl -fsS "http://127.0.0.1:${PORT}/health"
 echo ""
 echo "Deploy finished. interviewveil-api is running on port ${PORT}."
+echo ""
+echo "PM2 is owned by user: $(whoami) (see table column 'user')."
+echo "If you SSH as ubuntu/root, pm2 list will look empty. Use:"
+echo "  sudo -u deploy -H pm2 list"
+echo "  bash deploy/native/status.sh"

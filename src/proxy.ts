@@ -2,9 +2,18 @@ import { eq } from "drizzle-orm";
 import { Hono, type Context } from "hono";
 import { stream } from "hono/streaming";
 import { currentUser } from "./auth/sessions.js";
-import { parseUpstreamError, upstreamErrorResponse } from "./ai/errors.js";
+import {
+  parseUpstreamError,
+  sanitizeSseErrorEvents,
+  toAnthropicErrorJson,
+  upstreamErrorResponse,
+  userFacingUpstreamMessage,
+} from "./ai/errors.js";
+import { applyServerSystemPrompt } from "./ai/prompts.js";
+import { readInterviewHeaders } from "./ai/request.js";
 import { currentAiProvider, aiMessagesUpstream, isAiConfigured, lacksModernParams } from "./ai/provider.js";
-import { config, MAX_OUTPUT_TOKENS } from "./config.js";
+import { applyOutputPolicy } from "./ai/outputPolicy.js";
+import { config } from "./config.js";
 import { db } from "./db/client.js";
 import { audioUsage, type User } from "./db/schema.js";
 import { AppError, UnauthorizedError, errorJson } from "./errors.js";
@@ -111,21 +120,18 @@ proxy.post(
     if (!isAiConfigured()) throw new AppError(503, "api_error", "The AI service isn't configured.");
 
     const body = (await c.req.json()) as Record<string, unknown>;
+    const meta = readInterviewHeaders(c);
+    applyServerSystemPrompt(body, meta);
     // Hold one token now (atomic; blocks at 0). Charged on success, refunded on failure.
     const state = await reserveToken(user.id);
     const provider = currentAiProvider();
 
-    // Model routing: Claude plan tier, or MODEL_OPENROUTER when AI_PROVIDER=openrouter.
-    const mode = c.req.header("x-interviewveil-mode")?.slice(0, 32) ?? null;
-    const requestModel = modelForRequest(state.plan, { mode });
+    // Anthropic: live assist → MODEL_EXPLAIN; practice → plan tier. OpenRouter dev: MODEL_OPENROUTER for all.
+    const requestModel = modelForRequest(state.plan, { kind: meta.kind, mode: meta.mode });
     body.model = requestModel;
-    body.max_tokens = Math.min(Number(body.max_tokens) || MAX_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS);
+    applyOutputPolicy(body, meta.kind, state.plan, requestModel);
     const legacy = lacksModernParams(requestModel);
-    if (legacy) {
-      delete body.output_config;
-      delete body.fallbacks;
-    }
-    const kind = c.req.header("x-interviewveil-kind")?.slice(0, 32) ?? null;
+    const kind = meta.kind;
 
     const beta = (c.req.header("anthropic-beta") ?? "")
       .split(",")
@@ -234,7 +240,7 @@ proxy.post(
           message: info.message,
           body: info.detail,
         });
-        return new Response(JSON.stringify({ type: "error", error: { type: info.type, message: info.message } }), {
+        return new Response(JSON.stringify(toAnthropicErrorJson(info, "ai")), {
           status: 502,
           headers: { "content-type": "application/json" },
         });
@@ -252,14 +258,17 @@ proxy.post(
     c.header("cache-control", "no-cache");
     const outcome = new StreamOutcome();
     const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
     return stream(c, async (s) => {
       const reader = upstream.body!.getReader();
       try {
         for (;;) {
           const { done, value } = await reader.read();
           if (done) break;
-          outcome.feed(decoder.decode(value, { stream: true }));
-          await s.write(value);
+          const piece = decoder.decode(value, { stream: true });
+          outcome.feed(piece);
+          const relay = sanitizeSseErrorEvents(piece, "ai");
+          await s.write(encoder.encode(relay));
           if (s.aborted) break; // client went away: they never got the full answer
         }
       } catch (e) {
@@ -363,6 +372,11 @@ proxy.post(
         code: info.code,
         message: info.message,
         body: info.detail,
+      });
+      const userMessage = userFacingUpstreamMessage(info, "stt");
+      return new Response(JSON.stringify({ error: { message: userMessage } }), {
+        status: upstream.status >= 400 && upstream.status < 600 ? upstream.status : 502,
+        headers: { "content-type": "application/json" },
       });
     } else {
       await db.insert(audioUsage).values({ userId: user.id, seconds });
