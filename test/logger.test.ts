@@ -1,7 +1,7 @@
 import "./env.js";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseUpstreamError } from "../src/ai/errors.js";
+import { parseUpstreamError, sanitizeSseErrorEvents, userFacingUpstreamMessage } from "../src/ai/errors.js";
 import { redact, serializeError } from "../src/logger.js";
 
 describe("upstream error parsing", () => {
@@ -64,6 +64,32 @@ describe("upstream error parsing", () => {
     );
     assert.match(info.message, /agentic harnesses/);
     assert.equal(info.type, "permission_error");
+  });
+});
+
+describe("user-facing upstream messages", () => {
+  it("maps vendor rate limits to InterviewVeil copy", () => {
+    const info = parseUpstreamError(
+      429,
+      JSON.stringify({
+        type: "error",
+        error: { type: "rate_limit_error", message: "Provider returned error" },
+        metadata: {
+          raw: "google/gemma-4-31b-it:free is temporarily rate-limited upstream.",
+          provider_name: "Google AI Studio",
+        },
+      }),
+    );
+    assert.match(userFacingUpstreamMessage(info), /InterviewVeil is busy/);
+    assert.match(info.message, /gemma-4-31b-it/);
+  });
+
+  it("sanitizes streamed SSE error events", () => {
+    const chunk =
+      'event: error\ndata: {"type":"error","error":{"type":"permission_error","message":"inkling:free is only available on agentic harnesses"}}\n\n';
+    const out = sanitizeSseErrorEvents(chunk);
+    assert.doesNotMatch(out, /inkling/);
+    assert.match(out, /couldn't generate an answer/i);
   });
 });
 

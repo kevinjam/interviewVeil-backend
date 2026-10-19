@@ -80,12 +80,13 @@ describe("plans and model routing", () => {
     assert.equal(modelForPlan("expert"), "claude-opus-5-5");
   });
 
-  it("uses MODEL_OPENROUTER for every plan when AI_PROVIDER=openrouter", () => {
+  it("uses MODEL_OPENROUTER for all requests when AI_PROVIDER=openrouter", () => {
     process.env.AI_PROVIDER = "openrouter";
     process.env.MODEL_OPENROUTER = "cohere/north-mini-code:free";
     try {
       assert.equal(modelForRequest("free"), "cohere/north-mini-code:free");
       assert.equal(modelForRequest("expert"), "cohere/north-mini-code:free");
+      assert.equal(modelForRequest("free", { kind: "explain" }), "cohere/north-mini-code:free");
       assert.equal(modelForPlan("expert"), "claude-opus-5-5");
     } finally {
       delete process.env.AI_PROVIDER;
@@ -98,7 +99,7 @@ describe("plans and model routing", () => {
       Object.values(PLANS).map((p) => [p.id, p.priceCents, p.tokensPerMonth]),
       [
         ["free", 0, 3],
-        ["essential", 1100, 50],
+        ["essential", 1300, 50],
         ["professional", 2400, 160],
         ["expert", 4400, 500],
       ],

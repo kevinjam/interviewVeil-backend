@@ -49,16 +49,16 @@ For local testing, run `stripe listen --forward-to localhost:8787/webhooks/strip
 
 ### Plans
 
-| Plan | Price | Tokens / month | Model |
-|------|-------|----------------|-------|
-| Free | $0 | 3 | Haiku (`MODEL_HAIKU`) |
-| Essential | $11 | 50 | Haiku (`MODEL_HAIKU`) |
-| Professional | $24 | 160 | Sonnet (`MODEL_SONNET`) |
-| Expert | $44 | 500 | Opus (`MODEL_OPUS`) |
+| Plan | Price | Listen / month | Tokens / month | Practice model | Live assist |
+|------|-------|----------------|----------------|----------------|-------------|
+| Free | $0 | 10 min | 3 | Haiku | Sonnet (`MODEL_EXPLAIN`) |
+| Essential | $13 | 40 min | 50 | Haiku | Sonnet |
+| Professional | $24 | 180 min | 160 | Sonnet | Sonnet |
+| Expert | $44 | 400 min | 500 | Opus | Sonnet |
 
 All plan definitions live in `backend/src/plans.ts`.
 
-**Model routing.** `modelForPlan()` is the only place a model is chosen. The proxy always overwrites the model the client asks for, so a plan can never reach a higher tier.
+**Model routing.** Practice (`question`, `review`) uses the **plan tier**. Live assist (`explain`, `follow_up`) uses **`MODEL_EXPLAIN`** (defaults to Sonnet) on every plan. The proxy overwrites the client model so a plan cannot reach a higher tier on practice.
 
 **AI provider.** Chat (`POST /v1/messages`) defaults to Anthropic. Transcription stays on OpenAI (`STT_*`). Plan models (`MODEL_HAIKU` / `MODEL_SONNET` / `MODEL_OPUS`) are production Claude IDs and should not be overwritten for testing.
 
@@ -70,9 +70,13 @@ OPENROUTER_API_KEY=sk-or-...
 MODEL_OPENROUTER=cohere/north-mini-code:free
 ```
 
-Comment out `AI_PROVIDER` (or set `anthropic`) to go back to Claude. OpenRouter uses **one** model for every plan; it does not replace the three Claude tier IDs.
+Comment out `AI_PROVIDER` (or set `anthropic`) for production. With OpenRouter (**development only**), **every** chat request uses `MODEL_OPENROUTER` (including screenshots and follow-ups)—do not use this in production.
 
-**Tokens.** 1 token = 1 AI response.
+**Live assist (screenshots + listen).** Server-owned prompts; `MODEL_EXPLAIN` on all plans; `max_tokens` capped at `MAX_OUTPUT_TOKENS_LIVE_ASSIST` (8192); **low effort is not applied**. Pro/Expert **practice** may use low effort for latency.
+
+**Tokens.** 1 token = 1 AI response (practice, screenshot, or follow-up).
+
+**Upgrade path:** more **tokens**, more **listen time**, and **stronger practice** (Haiku → Sonnet → Opus). Live assist quality stays on `MODEL_EXPLAIN` unless you change that env var.
 
 **Listening.** Transcription uses **audio seconds** from your plan (separate from tokens). Each transcribed segment deducts its duration in seconds; failed upstream calls are refunded. The desktop sends WAV segments over **`POST /v1/audio/transcriptions`** (not a WebSocket). Real-time conversation streaming like Tech Screen would be a separate WebSocket endpoint and client work.
 

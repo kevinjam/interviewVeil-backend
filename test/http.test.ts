@@ -214,6 +214,62 @@ describe("AI proxy", () => {
     assert.equal(lastBody?.model, "claude-opus-5-5");
   });
 
+  it("routes explain to sonnet and replaces system prompt from headers", async () => {
+    mockAnthropic(fullStream);
+    const token = await desktopToken();
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-interviewveil-session": token,
+        "x-interviewveil-kind": "explain",
+        "x-interviewveil-mode": "coding",
+        "x-interviewveil-language": "python",
+        "x-interviewveil-answer-language": "English",
+        "x-interviewveil-custom-prompt": "Prefer BFS when asked.",
+        "anthropic-beta": "server-side-fallback-2026-07-01",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5",
+        max_tokens: 16000,
+        stream: true,
+        system: "client prompt must be ignored",
+        messages: [{ role: "user", content: [{ type: "text", text: "solve from screenshot" }] }],
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(lastBody?.model, "claude-sonnet-5-5", "MODEL_EXPLAIN for explain on free");
+    assert.equal(lastBody?.max_tokens, 8192, "live assist capped");
+    const system = String(lastBody?.system ?? "");
+    assert.match(system, /InterviewVeil/);
+    assert.match(system, /Thoughts \(Say to interviewer\)|## Code/);
+    assert.match(system, /BFS when asked/);
+    assert.doesNotMatch(system, /client prompt must be ignored/);
+  });
+
+  it("strips low effort on explain even when client sends it", async () => {
+    mockAnthropic(fullStream);
+    const token = await desktopToken();
+    const res = await app.request("/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-interviewveil-session": token,
+        "x-interviewveil-kind": "explain",
+        "anthropic-beta": "server-side-fallback-2026-07-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-5-5",
+        max_tokens: 16000,
+        stream: true,
+        output_config: { effort: "low" },
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    });
+    assert.equal(res.status, 200);
+    assert.equal(lastBody?.output_config, undefined);
+  });
+
   it("refunds when the stream is cut off or refused", async () => {
     const token = await desktopToken();
     mockAnthropic(ev("message_start") + ev("content_block_delta"));
@@ -299,7 +355,10 @@ describe("AI proxy", () => {
       const res = await ask(token);
       assert.equal(res.status, 400);
       const body = await res.json();
-      assert.equal(body.error.message, "Cohere: prompt is too long");
+      assert.equal(
+        body.error.message,
+        "That was too much to send at once. Use fewer screenshots or a shorter question.",
+      );
       assert.match(res.headers.get("x-request-id") ?? "", /^[\w.-]{8,}$/);
     } finally {
       delete process.env.AI_PROVIDER;
@@ -393,7 +452,7 @@ describe("website integration", () => {
     const plans = await (await app.request("/billing/plans")).json();
     assert.deepEqual(
       plans.map((p: { id: string; price: string }) => `${p.id}:${p.price}`),
-      ["free:$0", "essential:$11", "professional:$24", "expert:$44"],
+      ["free:$0", "essential:$13", "professional:$24", "expert:$44"],
     );
   });
 

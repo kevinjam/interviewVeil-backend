@@ -193,3 +193,47 @@ environment: production
 ```bash
 curl -fsS https://api.yourdomain.com/health
 ```
+
+## `pm2 list` is empty (but deploy just succeeded)
+
+Your deploy log shows `user │ deploy` in the PM2 table. If you SSH as **`ubuntu`** and run `pm2 list`, you will always see an **empty** table — that is a **different** PM2 home directory, not proof the API stopped.
+
+```bash
+# Correct (from any login user):
+sudo -u deploy -H pm2 list
+bash /var/www/interviewveil/deploy/native/status.sh
+```
+
+Wrong (misleading):
+
+```bash
+ubuntu@server:~$ pm2 list   # empty — ignores deploy’s processes
+```
+
+## `pm2 list` is empty for deploy too
+
+PM2 keeps its process list **per Linux user** (`~/.pm2`). Common causes:
+
+1. **Wrong user** — You SSH as `ubuntu` but the app runs under `deploy`:
+   ```bash
+   sudo -u deploy -H pm2 list
+   sudo -u deploy -H pm2 logs interviewveil-api --lines 50
+   ```
+2. **Reboot** — Processes do not come back until **startup** was configured for that user:
+   ```bash
+   sudo -u deploy -H bash -lc 'cd /var/www/interviewveil && pm2 start ecosystem.config.cjs && pm2 save'
+   sudo env PATH="$PATH:/usr/bin" pm2 startup systemd -u deploy -hp /home/deploy
+   # Run the command `pm2 startup` prints, then:
+   sudo -u deploy -H pm2 save
+   ```
+3. **Deploy never finished PM2** — Re-run deploy as `deploy`:
+   ```bash
+   sudo -u deploy -H bash -lc 'cd /var/www/interviewveil && bash deploy/native/release-deploy.sh'
+   ```
+
+Quick health check without PM2:
+
+```bash
+curl -fsS http://127.0.0.1:8787/health
+ss -tlnp | grep 8787
+```

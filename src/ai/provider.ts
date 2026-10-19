@@ -32,7 +32,7 @@ export function aiProviderEnvName(): "OPENROUTER_API_KEY" | "ANTHROPIC_API_KEY" 
  * (`claude-haiku-4-5`) still work in test: we prefix `anthropic/` when
  * the slug has no vendor.
  */
-/** One OpenRouter slug for all chat when `AI_PROVIDER=openrouter`. Plan MODEL_* stay Anthropic. */
+/** One OpenRouter slug for all chat in dev when `AI_PROVIDER=openrouter` (practice + live assist). */
 export function openRouterModel(): string | undefined {
   const slug = process.env.MODEL_OPENROUTER?.trim() || process.env.MODEL_OPEN_ROUTER?.trim();
   return slug || undefined;

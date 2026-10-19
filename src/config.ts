@@ -47,6 +47,8 @@ export const config = {
     haiku: process.env.MODEL_HAIKU ?? "claude-haiku-4-5",
     sonnet: process.env.MODEL_SONNET ?? "claude-sonnet-5-5",
     opus: process.env.MODEL_OPUS ?? "claude-opus-5-5",
+    /** Screenshots + live listen (explain / follow_up). Defaults to Sonnet. */
+    explain: process.env.MODEL_EXPLAIN ?? process.env.MODEL_SONNET ?? "claude-sonnet-5-5",
   },
 
   /** OpenAI-compatible transcription upstream. */
@@ -87,6 +89,8 @@ export const config = {
 };
 
 export const MAX_OUTPUT_TOKENS = 16000;
+/** explain / follow_up — discourages essay-length answers while leaving room for code. */
+export const MAX_OUTPUT_TOKENS_LIVE_ASSIST = num("MAX_OUTPUT_TOKENS_LIVE_ASSIST", 8192);
 
 /** Absolute URL on the website for a same-site path like "/dashboard?x=1". */
 export function webLink(path: string): string {

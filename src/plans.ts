@@ -33,9 +33,9 @@ export const PLANS: Record<Plan, PlanDefinition> = {
   essential: {
     id: "essential",
     name: "Essential",
-    priceCents: 1100,
+    priceCents: 1300,
     tokensPerMonth: 50,
-    audioSecondsPerMonth: 60 * 60,
+    audioSecondsPerMonth: 40 * 60,
     tier: "haiku",
     rank: 1,
     tagline: "Steady weekly practice.",
@@ -80,12 +80,24 @@ export function modelForPlan(plan: Plan): string {
 
 /**
  * Upstream model for this request.
- * - anthropic (production): plan tier → MODEL_HAIKU / MODEL_SONNET / MODEL_OPUS
- * - openrouter (testing): MODEL_OPENROUTER for every plan (MODEL_* are left alone)
+ * - **Production (anthropic):** practice → plan tier; live assist → MODEL_EXPLAIN (Sonnet default)
+ * - **Development (openrouter):** every request → MODEL_OPENROUTER (free slug) when set
  */
-export function modelForRequest(plan: Plan, _opts?: { mode?: string | null }): string {
+const LIVE_ASSIST_KINDS = new Set(["explain", "follow_up"]);
+
+export function modelForRequest(
+  plan: Plan,
+  opts?: { kind?: string | null; mode?: string | null },
+): string {
+  const kind = opts?.kind ?? null;
+  const liveAssist = kind != null && LIVE_ASSIST_KINDS.has(kind);
+
   if (currentAiProvider() === "openrouter") {
     return openRouterModel() ?? modelForPlan(plan);
+  }
+
+  if (liveAssist) {
+    return config.models.explain;
   }
   return modelForPlan(plan);
 }
