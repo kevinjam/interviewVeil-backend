@@ -100,7 +100,7 @@ Comment out `AI_PROVIDER` (or set `anthropic`) for production. With OpenRouter (
 
 - **Methods:** email + password (scrypt), Google, GitHub. Password reset is by emailed link (Brevo).
 - **Linking:** signing in with Google or GitHub links to an existing account with the same verified email. If that account's email was never verified, its password and sessions are dropped, so whoever registered the address without owning it loses access.
-- **Website:** forms post straight to the API, which sets an HttpOnly session cookie scoped to `COOKIE_DOMAIN` (e.g. `.interviewveil.app`) and redirects back to `WEB_URL`. Only `WEB_URL` may call the API with credentials (CORS), and cookie-authenticated posts from any other origin are rejected (CSRF).
+- **Website:** forms post straight to the API, which sets an HttpOnly session cookie scoped to `COOKIE_DOMAIN` (e.g. `.interviewveil.app`) and redirects back to `WEB_URL`. Credentialed CORS and CSRF allow `WEB_URL` plus its `www` / apex alias (and optional `WEB_ORIGINS`); keep `WEB_URL`, the desktop `VITE_WEB_URL`, and marketing redirects on the same canonical host.
 - **Desktop app:** **Sign in with browser** shows a code and opens the website's `/desktop/connect`. You confirm the matching code there, and the app (which is polling) receives its own session token, sent as a header.
 - **Storage:** only SHA-256 hashes of session, reset and handoff tokens are stored.
 

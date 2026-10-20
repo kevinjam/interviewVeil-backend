@@ -191,6 +191,23 @@ environment: production
 ## Verify
 
 ```bash
+# On the server — app process (deploy user):
+sudo -u deploy -H pm2 list
+curl -fsS http://127.0.0.1:8787/health
+
+# Public URL (needs Nginx + TLS + DNS + AWS security group):
+curl -fsS https://api.yourdomain.com/health
+```
+
+If **localhost works** but **https://api…/health** does not, the Node app is fine; fix the **edge**:
+
+1. **Nginx site** — `API_DOMAIN=api.interviewveil.com bash deploy/native/install-nginx-site.sh`
+2. **TLS** — `sudo certbot --nginx -d api.interviewveil.com` (HTTPS will not work until this succeeds)
+3. **DNS** — `A` record for `api.interviewveil.com` → EC2 public (or Elastic) IP
+4. **AWS security group** — inbound **80** and **443** from the internet (not only 22)
+5. Run **`bash deploy/native/diagnose-public.sh`** on the instance for a full checklist
+
+```bash
 curl -fsS https://api.yourdomain.com/health
 ```
 

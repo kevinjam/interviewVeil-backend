@@ -14,6 +14,35 @@ export type LogLevel = "debug" | "info" | "warn" | "error";
 const publicUrl = (process.env.PUBLIC_URL ?? "http://localhost:8787").replace(/\/$/, "");
 const webUrl = (process.env.WEB_URL ?? "http://localhost:5173").replace(/\/$/, "");
 
+/** Website origins that may use credentialed CORS and pass CSRF (WEB_URL + www/apex alias + WEB_ORIGINS). */
+export function trustedWebOrigins(webUrl: string, extra?: string): ReadonlySet<string> {
+  const origins = new Set<string>();
+  const add = (raw: string) => {
+    const trimmed = raw.trim();
+    if (!trimmed) return;
+    try {
+      origins.add(new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`).origin);
+    } catch {
+      /* ignore invalid */
+    }
+  };
+  add(webUrl);
+  try {
+    const u = new URL(webUrl);
+    const host = u.hostname;
+    const port = u.port ? `:${u.port}` : "";
+    if (host.startsWith("www.")) {
+      add(`${u.protocol}//${host.slice(4)}${port}`);
+    } else if (host !== "localhost" && !host.endsWith(".localhost")) {
+      add(`${u.protocol}//www.${host}${port}`);
+    }
+  } catch {
+    /* ignore */
+  }
+  if (extra) for (const part of extra.split(",")) add(part);
+  return origins;
+}
+
 export const config = {
   port: num("PORT", 8787),
   logLevel: oneOf(process.env.LOG_LEVEL?.toLowerCase(), ["debug", "info", "warn", "error"] as const, "info"),
@@ -27,6 +56,8 @@ export const config = {
   publicUrl,
   /** The website (landing, login, dashboard). Users are redirected here. e.g. https://interviewveil.app */
   webUrl,
+  /** Browser origins allowed for cookie auth from the marketing site (includes www when WEB_URL is apex). */
+  trustedWebOrigins: trustedWebOrigins(webUrl, process.env.WEB_ORIGINS),
   /**
    * Cookie domain shared by the website and API, e.g. ".interviewveil.app" when the
    * site is interviewveil.app and the API is api.interviewveil.app. Unset in local dev.
@@ -95,4 +126,8 @@ export const MAX_OUTPUT_TOKENS_LIVE_ASSIST = num("MAX_OUTPUT_TOKENS_LIVE_ASSIST"
 /** Absolute URL on the website for a same-site path like "/dashboard?x=1". */
 export function webLink(path: string): string {
   return `${config.webUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+export function isTrustedWebOrigin(origin: string | undefined): boolean {
+  return Boolean(origin && config.trustedWebOrigins.has(origin));
 }

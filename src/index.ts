@@ -6,7 +6,7 @@ import { auth } from "./auth/routes.js";
 import { currentUser, SESSION_COOKIE } from "./auth/sessions.js";
 import { billing } from "./billing/routes.js";
 import { stripeWebhook } from "./billing/webhooks.js";
-import { config } from "./config.js";
+import { config, isTrustedWebOrigin } from "./config.js";
 import { createLogger, newRequestId, runWithLogContext, serializeError, setLogFormat, setLogLevel } from "./logger.js";
 import { adminChat, chat } from "./chat/routes.js";
 import { runMigrations } from "./db/client.js";
@@ -49,7 +49,6 @@ const ALLOWED_HEADERS = [
   "x-stainless-helper-method",
 ].join(", ");
 
-const webOrigin = new URL(config.webUrl).origin;
 const apiOrigin = new URL(config.publicUrl).origin;
 
 /**
@@ -60,7 +59,7 @@ const apiOrigin = new URL(config.publicUrl).origin;
  */
 app.use("*", async (c, next) => {
   const origin = c.req.header("origin");
-  const trusted = origin === webOrigin;
+  const trusted = isTrustedWebOrigin(origin);
   const setCors = () => {
     if (!origin) return;
     c.header("access-control-allow-origin", trusted ? origin : "*");
@@ -89,7 +88,7 @@ app.use("*", async (c, next) => {
   const unsafe = !["GET", "HEAD", "OPTIONS"].includes(c.req.method);
   const exempt = c.req.path === "/webhooks/stripe" || Boolean(c.req.header("x-interviewveil-session"));
   const origin = c.req.header("origin");
-  if (usesCookie && unsafe && !exempt && origin && origin !== webOrigin && origin !== apiOrigin) {
+  if (usesCookie && unsafe && !exempt && origin && !isTrustedWebOrigin(origin) && origin !== apiOrigin) {
     return c.text("Cross-site request blocked", 403);
   }
   await next();
